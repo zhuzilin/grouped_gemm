@@ -21,7 +21,7 @@ __global__ void sinkhorn_kernel(float *cost, const int rows, const int cols, flo
 
     // Exponentiate cost matrix
     if (idx < rows * cols) {
-        for (long flat_idx = idx; flat_idx < rows * cols; flat_idx += blockDim.x)
+        for (int flat_idx = idx; flat_idx < rows * cols; flat_idx += blockDim.x)
             cost[flat_idx] = expf(cost[flat_idx]);
     }
 
@@ -46,12 +46,13 @@ __global__ void sinkhorn_kernel(float *cost, const int rows, const int cols, flo
         local_error = 0.0f;
 
         // Update d0.
-        for (long row_idx = idx; row_idx < rows; row_idx += blockDim.x) {
+        for (int row_idx = idx; row_idx < rows; row_idx += blockDim.x) {
             float sum = 0.0f;
             for (int j = 0; j < cols; ++j) {
                 sum += shared_d1[j] * cost[row_idx * cols + j];
             }
-            shared_d0[row_idx] = (1.0f / rows) / (sum + eps);
+            // Using __fdividef for fast division
+            shared_d0[row_idx] = __fdividef(1.0f, (sum + eps) * rows);
         }
         __syncthreads();
 
@@ -61,7 +62,7 @@ __global__ void sinkhorn_kernel(float *cost, const int rows, const int cols, flo
             for (int i = 0; i < rows; ++i) {
                 sum += shared_d0[i] * cost[i * cols + idx];
             }
-            float new_d1 = (1.0f / cols) / (sum + eps);
+            float new_d1 = __fdividef(1.0, (sum + eps) * cols);
             abs_diff_sum[idx] = fabsf(new_d1 - shared_d1_old[idx]);
             shared_d1[idx] = new_d1;
             // Update shared_d1_old for the next iteration
@@ -90,7 +91,7 @@ void sinkhorn_launch(float *cost, int rows, int cols, float tol) {
     // Allocate enough shared memory for d0, d1, d1_old and abs_diff_sum
     size_t sharedMemSize = (rows + cols * 2 + cols) * sizeof(float);
     sinkhorn_kernel<<<blocksPerGrid, threadsPerBlock, sharedMemSize>>>(cost, rows, cols, tol);
-    cudaDeviceSynchronize();
+    // cudaDeviceSynchronize();
 }
 
 // Wrapper function
