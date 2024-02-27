@@ -5,20 +5,24 @@ import torch
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 
-if not torch.cuda.is_available():
-    if os.environ.get("TORCH_CUDA_ARCH_LIST", None) is None:
-        os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"
-
+if os.environ.get("TORCH_CUDA_ARCH_LIST"):
+    # Let PyTorch builder to choose device to target for.
+    device_capability = ""
+else:
+    device_capability = torch.cuda.get_device_capability()
+    device_capability = f"{device_capability[0]}{device_capability[1]}"
 
 cwd = Path(os.path.dirname(os.path.abspath(__file__)))
-_dc = torch.cuda.get_device_capability()
-if _dc[0] < 8:
-    print("Unsupported compute capability, only device capability >=80 are supported.")
-    # DEBUG: set dc=8 as a workaround when ci is scheduled on V100.
-    _dc = (8, 0)
-    # sys.exit(0)
 
-_dc = f"{_dc[0]}{_dc[1]}"
+nvcc_flags = [
+    "-std=c++17",  # NOTE: CUTLASS requires c++17
+]
+
+if device_capability:
+    nvcc_flags.extend([
+        f"--generate-code=arch=compute_{device_capability},code=sm_{device_capability}",
+        f"-DGROUPED_GEMM_DEVICE_CAPABILITY={device_capability}",
+    ])
 
 ext_modules = [
     CUDAExtension(
@@ -31,12 +35,7 @@ ext_modules = [
             "cxx": [
                 "-fopenmp", "-fPIC", "-Wno-strict-aliasing"
             ],
-            "nvcc": [
-                f"--generate-code=arch=compute_{_dc},code=sm_{_dc}",
-                f"-DGROUPED_GEMM_DEVICE_CAPABILITY={_dc}",
-                # NOTE: CUTLASS requires c++17.
-                "-std=c++17",
-            ],
+            "nvcc": nvcc_flags,
         }
     )
 ]
