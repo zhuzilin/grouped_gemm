@@ -3,6 +3,8 @@ import torch
 import warnings
 
 from sys import stderr
+import torch.cuda.nvtx as nvtx
+
 
 
 class GroupedGemm(torch.autograd.Function):
@@ -39,159 +41,200 @@ def gmm(a, b, batch_sizes, trans_b=False):
 def sinkhorn_kernel(cost, tol=0.0001):
     return backend.sinkhorn(cost, tol)
 
-class PermuteMoE(torch.autograd.Function):
-  
+################################################################################################
+##
+## PermuteMoE topK
+##
+################################################################################################
+
+class PermuteMoE_topK(torch.autograd.Function):
+
   workspace_fw=None
   dtype=None
-  max_token_num=0
+  max_expanded_token_num=0
 
   @staticmethod
   def forward(ctx, 
-              unpermuted_inputs: torch.Tensor,
-              expert_for_rows: torch.Tensor,
+              input_act: torch.Tensor,
+              indices: torch.Tensor,
               max_token_num: int):
+    nvtx.range_push("permute_topK forward")
+    # Empty input check
+    if not input_act.numel():
+      return input_act, None
 
     # Device check
-    if unpermuted_inputs.is_cpu:
-      raise RuntimeError("[Error] The input \"unpermuted_inputs\" of permute op is on the device: CPU!")
-    if expert_for_rows.is_cpu:
-      print("[Warning] The input \"expert_for_rows\" of permute op is on the device: CPU!", file=stderr)
+    if input_act.is_cpu:
+      raise RuntimeError("[Error] The input `input_act` of permute_topK op is on the device: CPU!")
+    if indices.is_cpu:
+      print("[Warning] The input `indices` of permute_topK op is on the device: CPU!", file=stderr)
       expert_for_rows = expert_for_rows.cuda()
 
     # Shape check
-    if unpermuted_inputs.size(0) != expert_for_rows.size(0):
-      raise RuntimeError(f"[Error] permute op input \"expert_for_rows\" shape mismatch! "
-                         f"Expect {unpermuted_inputs.size(0)}, but got {expert_for_rows.size(0)}.")
+    if input_act.size(0) != indices.size(0):
+      raise RuntimeError(f"[Error] permute_topK op input `indices` shape mismatch! "
+                         f"Expect {input_act.size(0)}, but got {indices.size(0)}.")
 
     # Data type check
-    if expert_for_rows.dtype != torch.int32:
-      warnings.warn("Got {} dtype for \"expert_for_rows\", will be casted into torch.int32".format(expert_for_rows.dtype))
-      expert_for_rows = expert_for_rows.to(torch.int32)
+    if indices.dtype != torch.int32:
+      print(f"[Warning] The data type of the input `indices` of permute_topK op is {indices.dtype}! "
+            "The recommended type is torch.int32.", file=stderr)
+      indices = indices.to(torch.int32)
 
     # Contiguous check
-    if not unpermuted_inputs.is_contiguous():
-      print("[Warning] The input \"unpermuted_inputs\" of permute op is discontiguous!", file=stderr)
-      unpermuted_inputs = unpermuted_inputs.contiguous()
-    if not expert_for_rows.is_contiguous():
-      print("[Warning] The input \"expert_for_rows\" of permute op is discontiguous!", file=stderr)
-      expert_for_rows = expert_for_rows.contiguous()
+    if not input_act.is_contiguous():
+      print("[Warning] The input `input_act` of permute_topK op is discontiguous!", file=stderr)
+      input_act = input_act.contiguous()
+    if not indices.is_contiguous():
+      print("[Warning] The input `indices` of permute_topK op is discontiguous!", file=stderr)
+      indices = indices.contiguous()
 
-    input_max_token_num = max(max_token_num, unpermuted_inputs.size(0))
-    if PermuteMoE.max_token_num < input_max_token_num:
-      # print("Permute op workspace reset!")
-      PermuteMoE.max_token_num = input_max_token_num
-      PermuteMoE.workspace_fw = []
+    num_topK = indices.size(1)
 
-    if PermuteMoE.dtype != unpermuted_inputs.dtype:
-      # print("Permute op workspace reset!")
-      PermuteMoE.dtype = unpermuted_inputs.dtype
-      PermuteMoE.workspace_fw = []
+    input_max_expanded_token_num = max(max_token_num, input_act.size(0)) * num_topK
+    if PermuteMoE_topK.max_expanded_token_num < input_max_expanded_token_num:
+      PermuteMoE_topK.max_expanded_token_num = input_max_expanded_token_num
+      PermuteMoE_topK.workspace_fw = []
 
-    permuted_inputs, row_id_map, PermuteMoE.workspace_fw = backend.permute(
-      unpermuted_inputs,
-      expert_for_rows,
-      PermuteMoE.workspace_fw,
-      PermuteMoE.max_token_num)
+    if PermuteMoE_topK.dtype != input_act.dtype:
+      PermuteMoE_topK.dtype = input_act.dtype
+      PermuteMoE_topK.workspace_fw = []
+
+    permuted_act, row_id_map, PermuteMoE_topK.workspace_fw = backend.permute(
+      input_act,
+      indices,
+      PermuteMoE_topK.workspace_fw,
+      PermuteMoE_topK.max_expanded_token_num)
 
     ctx.row_id_map = row_id_map
+    ctx.num_tokens = indices.size(0)
+    ctx.num_topK = indices.size(1)
+    nvtx.range_pop()
+    return permuted_act, row_id_map
 
-    return permuted_inputs, row_id_map
 
   @staticmethod
-  def backward(ctx, permuted_inputs_grad, _):
-    if not permuted_inputs_grad.is_contiguous():
-      permuted_inputs_grad = permuted_inputs_grad.contiguous()
+  def backward(ctx, permuted_act_grad, _):
+    nvtx.range_push("permute_topK backward")
+    # Empty input check
+    if not permuted_act_grad.numel():
+      return permuted_act_grad, None, None
+
+    if not permuted_act_grad.is_contiguous():
+      permuted_act_grad = permuted_act_grad.contiguous()
+
     row_id_map = ctx.row_id_map
+    num_tokens = ctx.num_tokens
+    num_topK = ctx.num_topK
 
-    original_output = backend.unpermute(
-      permuted_inputs_grad,
-      row_id_map)
+    unpermuted_act_grad = backend.unpermute(
+      permuted_act_grad,
+      row_id_map,
+      torch.tensor([]),
+      num_tokens,
+      num_topK)
+    nvtx.range_pop()
+    return unpermuted_act_grad, None, None
 
-    return original_output, None, None
+################################################################################################
+##
+## UnpermuteMoE topK
+##
+################################################################################################
 
-class UnpermuteMoE(torch.autograd.Function):
+class UnpermuteMoE_topK(torch.autograd.Function):
 
-  workspace_fw=None
-  dtype=None
-  max_token_num=0
-  
   @staticmethod
   def forward(ctx,
-              permuted_inputs: torch.Tensor,
-              expert_for_rows: torch.Tensor,
+              input_act: torch.Tensor,
               row_id_map: torch.Tensor,
-              max_token_num: int):
+              probs: torch.Tensor):
+    nvtx.range_push("unpermute_topK forward")
+    # Empty input check
+    if not input_act.numel():
+      ctx.probs = probs
+      return input_act
 
     # Device check
-    if permuted_inputs.is_cpu:
-      raise RuntimeError("[Error] The input \"permuted_inputs\" of unpermute op is on the device: CPU!")
-    if expert_for_rows.is_cpu:
-      print("[Warning] The input \"expert_for_rows\" of unpermute op is on the device: CPU!", file=stderr)
-      expert_for_rows = expert_for_rows.cuda()
+    if input_act.is_cpu:
+      raise RuntimeError("[Error] The input `input_act` of unpermute_topK op is on the device: CPU!")
     if row_id_map.is_cpu:
-      print("[Warning] The input \"row_id_map\" of unpermute op is on the device: CPU!", file=stderr)
+      print("[Warning] The input `row_id_map` of unpermute_topK op is on the device: CPU!", file=stderr)
       row_id_map = row_id_map.cuda()
+    if probs.is_cpu:
+      print("[Warning] The input `probs` of unpermute_topK op is on the device: CPU!", file=stderr)
+      probs = probs.cuda()
 
     # Shape check
-    if permuted_inputs.size(0) != expert_for_rows.size(0):
-      raise RuntimeError(f"[Error] unpermute op input \"expert_for_rows\" shape mismatch! "
-                         f"Expect {permuted_inputs.size(0)}, but got {expert_for_rows.size(0)}.")
+    if row_id_map.size(0) != input_act.size(0):
+      raise RuntimeError(f"[Error] unpermute_topK op input `row_id_map` shape mismatch! "
+                         f"Expect {input_act.size(0)}, but got {row_id_map.size(0)}.")
+    if input_act.size(0) != probs.size(0) * probs.size(1):
+      raise RuntimeError(f"[Error] unpermute_topK op input `probs` shape mismatch! "
+                         f"Expect {input_act.size(0)}, but got {probs.size(0) * probs.size(1)}.")
 
     # Data type check
-    if expert_for_rows.dtype != torch.int32:
-      warnings.warn("Got {} dtype for \"expert_for_rows\", will be casted into torch.int32".format(expert_for_rows.dtype))
-      expert_for_rows = expert_for_rows.to(torch.int32)
     if row_id_map.dtype != torch.int32:
-      print("[Warning] The data type of the input \"row_id_map\" of unpermute op is int64! "
-            "The recommended type is int32.", file=stderr)
+      print(f"[Warning] The data type of the input `row_id_map` of unpermute_topK op is {row_id_map.dtype}! "
+            "The recommended type is torch.int32.", file=stderr)
       row_id_map = row_id_map.to(torch.int32)
+    if probs.dtype != torch.float32:
+      print(f"[Warning] The data type of the input `probs` of unpermute_topK op is {probs.dtype}! "
+            "The recommended type is torch.float32.", file=stderr)
+      probs = probs.to(torch.float32)
 
     # Contiguous check
-    if not permuted_inputs.is_contiguous():
-      print("[Warning] The input \"permuted_inputs\" of unpermute op is discontiguous!", file=stderr)
-      permuted_inputs = permuted_inputs.contiguous()
-    if not expert_for_rows.is_contiguous():
-      print("[Warning] The input \"expert_for_rows\" of unpermute op is discontiguous!", file=stderr)
-      expert_for_rows = expert_for_rows.contiguous()
+    if not input_act.is_contiguous():
+      print("[Warning] The input `input_act` of unpermute_topK op is discontiguous!", file=stderr)
+      input_act = input_act.contiguous()
     if not row_id_map.is_contiguous():
-      print("[Warning] The input \"row_id_map\" of unpermute op is discontiguous!", file=stderr)
+      print("[Warning] The input `row_id_map` of unpermute_topK op is discontiguous!", file=stderr)
       row_id_map = row_id_map.contiguous()
+    if not probs.is_contiguous():
+      print("[Warning] The input `probs` of unpermute_topK op is discontiguous!", file=stderr)
+      probs = probs.contiguous()
 
-    input_max_token_num = max(max_token_num, permuted_inputs.size(0))
-    if UnpermuteMoE.max_token_num < input_max_token_num:
-      # print("Unpermute op workspace reset!")
-      UnpermuteMoE.max_token_num = input_max_token_num
-      UnpermuteMoE.workspace_fw = []
+    num_tokens = probs.size(0)
+    num_topK = probs.size(1)
 
-    if UnpermuteMoE.dtype != permuted_inputs.dtype:
-      # print("Unpermute op workspace reset!")
-      UnpermuteMoE.dtype = permuted_inputs.dtype
-      UnpermuteMoE.workspace_fw = []
+    unpermuted_output = backend.unpermute(
+      input_act,
+      row_id_map,
+      probs,
+      num_tokens,
+      num_topK)
 
-    ctx.expert_for_rows = expert_for_rows
+    ctx.save_for_backward(input_act, row_id_map, probs)
+    nvtx.range_pop()
+    return unpermuted_output
 
-    original_output = backend.unpermute(
-      permuted_inputs,
-      row_id_map)
-    
-    return original_output
-  
   @staticmethod
-  def backward(ctx, unpermuted_inputs_grad):
-    if not unpermuted_inputs_grad.is_contiguous():
-      unpermuted_inputs_grad = unpermuted_inputs_grad.contiguous()
-    expert_for_rows = ctx.expert_for_rows
+  def backward(ctx, unpermuted_act_grad):
+    nvtx.range_push("unpermute_topK backward")
+    # Empty input check
+    if not unpermuted_act_grad.numel():
+      return unpermuted_act_grad, None, ctx.probs
 
-    permuted_inputs, _, UnpermuteMoE.workspace_fw = backend.permute(
-      unpermuted_inputs_grad,
-      expert_for_rows,
-      UnpermuteMoE.workspace_fw,
-      UnpermuteMoE.max_token_num)
+    if not unpermuted_act_grad.is_contiguous():
+      unpermuted_act_grad = unpermuted_act_grad.contiguous()
 
-    return permuted_inputs, None, None, None
+    input_act, row_id_map, probs = ctx.saved_tensors
 
-def permute(unpermuted_inputs, expert_for_rows, max_token_num=0):
-  return PermuteMoE.apply(unpermuted_inputs, expert_for_rows, max_token_num)
+    act_grad = None
+    if ctx.needs_input_grad[0]:
+      act_grad, prob_grad = backend.unpermute_bwd(
+        unpermuted_act_grad,
+        input_act,
+        row_id_map,
+        probs)
 
-def unpermute(permuted_inputs, expert_for_rows, source_row_to_dest_row, max_token_num=0):
-  return UnpermuteMoE.apply(permuted_inputs, expert_for_rows, source_row_to_dest_row, max_token_num)
+    if not ctx.needs_input_grad[2]:
+      prob_grad = None
+    nvtx.range_pop()
+    return act_grad, None, prob_grad
+
+def permute(input_act, indices, max_token_num=0):
+  return PermuteMoE_topK.apply(input_act, indices, max_token_num)
+
+def unpermute(input_act, row_id_map, probs):
+  return UnpermuteMoE_topK.apply(input_act, row_id_map, probs)
