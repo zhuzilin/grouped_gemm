@@ -67,7 +67,7 @@ class PermuteMoE_topK(torch.autograd.Function):
     if input_act.is_cpu:
       raise RuntimeError("[Error] The input `input_act` of permute_topK op is on the device: CPU!")
     if indices.is_cpu:
-      print("[Warning] The input `indices` of permute_topK op is on the device: CPU!", file=stderr)
+      warnings.warn("The input `indices` of permute_topK op is on the device: CPU!")
       expert_for_rows = expert_for_rows.cuda()
 
     # Shape check
@@ -77,16 +77,16 @@ class PermuteMoE_topK(torch.autograd.Function):
 
     # Data type check
     if indices.dtype != torch.int32:
-      print(f"[Warning] The data type of the input `indices` of permute_topK op is {indices.dtype}! "
-            "The recommended type is torch.int32.", file=stderr)
+      warnings.warn(f"The data type of the input `indices` of permute_topK op is {indices.dtype}! "
+            "The recommended type is torch.int32.")
       indices = indices.to(torch.int32)
 
     # Contiguous check
     if not input_act.is_contiguous():
-      print("[Warning] The input `input_act` of permute_topK op is discontiguous!", file=stderr)
+      warnings.warn("The input `input_act` of permute_topK op is discontiguous!")
       input_act = input_act.contiguous()
     if not indices.is_contiguous():
-      print("[Warning] The input `indices` of permute_topK op is discontiguous!", file=stderr)
+      warnings.warn("The input `indices` of permute_topK op is discontiguous!")
       indices = indices.contiguous()
 
     num_topK = indices.size(1)
@@ -159,10 +159,10 @@ class UnpermuteMoE_topK(torch.autograd.Function):
     if input_act.is_cpu:
       raise RuntimeError("[Error] The input `input_act` of unpermute_topK op is on the device: CPU!")
     if row_id_map.is_cpu:
-      print("[Warning] The input `row_id_map` of unpermute_topK op is on the device: CPU!", file=stderr)
+      warnings.warn("The input `row_id_map` of unpermute_topK op is on the device: CPU!")
       row_id_map = row_id_map.cuda()
     if probs.is_cpu:
-      print("[Warning] The input `probs` of unpermute_topK op is on the device: CPU!", file=stderr)
+      warnings.warn("The input `probs` of unpermute_topK op is on the device: CPU!")
       probs = probs.cuda()
 
     # Shape check
@@ -175,23 +175,23 @@ class UnpermuteMoE_topK(torch.autograd.Function):
 
     # Data type check
     if row_id_map.dtype != torch.int32:
-      print(f"[Warning] The data type of the input `row_id_map` of unpermute_topK op is {row_id_map.dtype}! "
-            "The recommended type is torch.int32.", file=stderr)
+      warnings.warn(f"The data type of the input `row_id_map` of unpermute_topK op is {row_id_map.dtype}! "
+            "The recommended type is torch.int32.")
       row_id_map = row_id_map.to(torch.int32)
     if probs.dtype != torch.float32:
-      print(f"[Warning] The data type of the input `probs` of unpermute_topK op is {probs.dtype}! "
-            "The recommended type is torch.float32.", file=stderr)
+      warnings.warn(f"The data type of the input `probs` of unpermute_topK op is {probs.dtype}! "
+            "The recommended type is torch.float32.")
       probs = probs.to(torch.float32)
 
     # Contiguous check
     if not input_act.is_contiguous():
-      print("[Warning] The input `input_act` of unpermute_topK op is discontiguous!", file=stderr)
+      warnings.warn("The input `input_act` of unpermute_topK op is discontiguous!")
       input_act = input_act.contiguous()
     if not row_id_map.is_contiguous():
-      print("[Warning] The input `row_id_map` of unpermute_topK op is discontiguous!", file=stderr)
+      warnings.warn("The input `row_id_map` of unpermute_topK op is discontiguous!")
       row_id_map = row_id_map.contiguous()
     if not probs.is_contiguous():
-      print("[Warning] The input `probs` of unpermute_topK op is discontiguous!", file=stderr)
+      warnings.warn("The input `probs` of unpermute_topK op is discontiguous!")
       probs = probs.contiguous()
 
     num_tokens = probs.size(0)
