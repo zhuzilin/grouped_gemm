@@ -58,10 +58,18 @@ class PermuteMoE_topK(torch.autograd.Function):
               input_act: torch.Tensor,
               indices: torch.Tensor,
               max_token_num: int):
+    '''
+    indices: for topK=1, indices in a 1-d tensor of shape [num_tokens],
+             otherwise, it's a 2-d tensor of shape [num_tokens, topK]
+    '''
     nvtx.range_push("permute_topK forward")
     # Empty input check
     if not input_act.numel():
       return input_act, None
+
+    # For top1 case, view the indices as 2D tensor to unify the shape for topk>=2 cases.
+    if indices.dim() == 1:
+      indices = indices.view(-1, 1)
 
     # Device check
     if input_act.is_cpu:
@@ -108,7 +116,7 @@ class PermuteMoE_topK(torch.autograd.Function):
 
     ctx.row_id_map = row_id_map
     ctx.num_tokens = indices.size(0)
-    ctx.num_topK = indices.size(1)
+    ctx.num_topK = num_topK
     nvtx.range_pop()
     return permuted_act, row_id_map
 
@@ -148,7 +156,7 @@ class UnpermuteMoE_topK(torch.autograd.Function):
   def forward(ctx,
               input_act: torch.Tensor,
               row_id_map: torch.Tensor,
-              probs: torch.Tensor):
+              probs: torch.Tensor = None):
     nvtx.range_push("unpermute_topK forward")
     # Empty input check
     if not input_act.numel():
@@ -161,7 +169,7 @@ class UnpermuteMoE_topK(torch.autograd.Function):
     if row_id_map.is_cpu:
       warnings.warn("The input `row_id_map` of unpermute_topK op is on the device: CPU!")
       row_id_map = row_id_map.cuda()
-    if probs.is_cpu:
+    if probs is not None and probs.is_cpu:
       warnings.warn("The input `probs` of unpermute_topK op is on the device: CPU!")
       probs = probs.cuda()
 
@@ -169,7 +177,7 @@ class UnpermuteMoE_topK(torch.autograd.Function):
     if row_id_map.size(0) != input_act.size(0):
       raise RuntimeError(f"[Error] unpermute_topK op input `row_id_map` shape mismatch! "
                          f"Expect {input_act.size(0)}, but got {row_id_map.size(0)}.")
-    if input_act.size(0) != probs.size(0) * probs.size(1):
+    if probs is not None and input_act.size(0) != probs.size(0) * probs.size(1):
       raise RuntimeError(f"[Error] unpermute_topK op input `probs` shape mismatch! "
                          f"Expect {input_act.size(0)}, but got {probs.size(0) * probs.size(1)}.")
 
@@ -178,7 +186,7 @@ class UnpermuteMoE_topK(torch.autograd.Function):
       warnings.warn(f"The data type of the input `row_id_map` of unpermute_topK op is {row_id_map.dtype}! "
             "The recommended type is torch.int32.")
       row_id_map = row_id_map.to(torch.int32)
-    if probs.dtype != torch.float32:
+    if probs is not None and probs.dtype != torch.float32:
       warnings.warn(f"The data type of the input `probs` of unpermute_topK op is {probs.dtype}! "
             "The recommended type is torch.float32.")
       probs = probs.to(torch.float32)
@@ -190,17 +198,17 @@ class UnpermuteMoE_topK(torch.autograd.Function):
     if not row_id_map.is_contiguous():
       warnings.warn("The input `row_id_map` of unpermute_topK op is discontiguous!")
       row_id_map = row_id_map.contiguous()
-    if not probs.is_contiguous():
+    if probs is not None and not probs.is_contiguous():
       warnings.warn("The input `probs` of unpermute_topK op is discontiguous!")
       probs = probs.contiguous()
 
-    num_tokens = probs.size(0)
-    num_topK = probs.size(1)
+    num_tokens = probs.size(0) if probs is not None else input_act.size(0)
+    num_topK = probs.size(1) if probs is not None else 1
 
     unpermuted_output = backend.unpermute(
       input_act,
       row_id_map,
-      probs,
+      probs if probs is not None else torch.tensor([]),
       num_tokens,
       num_topK)
 
@@ -236,5 +244,5 @@ class UnpermuteMoE_topK(torch.autograd.Function):
 def permute(input_act, indices, max_token_num=0):
   return PermuteMoE_topK.apply(input_act, indices, max_token_num)
 
-def unpermute(input_act, row_id_map, probs):
+def unpermute(input_act, row_id_map, probs=None):
   return UnpermuteMoE_topK.apply(input_act, row_id_map, probs)

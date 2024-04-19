@@ -37,4 +37,7 @@ def unpermute(input, row_id_map, prob, max_tokens, num_topK):
     return backend.unpermute(input, row_id_map, prob, max_tokens, num_topK)
 
 def unpermute_bwd(input_bwd, input_fwd, row_id_map, prob):
+    # TODO: @Jiang fix the case in kernel to allow None probs
+    if prob is None:
+      prob = torch.ones([input_bwd.size(0), 1], dtype=torch.float32, device=input_bwd.device)
     return backend.unpermute_bwd(input_bwd, input_fwd, row_id_map, prob)
