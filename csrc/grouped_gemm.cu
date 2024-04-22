@@ -190,6 +190,7 @@ torch::Tensor CutlassGroupedGemm(torch::Tensor a,
 
 cublasHandle_t cublas_handle[NUM_STREAM];
 cudaStream_t cublas_stream[NUM_STREAM];
+cudaEvent_t cublas_event[NUM_STREAM];
 bool cublas_init = false;
 
 void cublas_handle_init()
@@ -201,8 +202,23 @@ void cublas_handle_init()
         cudaStreamCreate(&cublas_stream[i]);
         cublasCreate(&cublas_handle[i]);
         cublasSetStream(cublas_handle[i], cublas_stream[i]);
+        cudaEventCreate(&cublas_event[i]);
     }
 }
+
+inline void cublas_sync_streams(cudaStream_t stream)
+{
+    for (int s = 0; s < NUM_STREAM; s++)
+    {
+        cudaEventRecord(cublas_event[s], cublas_stream[s]);
+    }
+
+    for (int s = 0; s < NUM_STREAM; s++)
+    {
+        cudaStreamWaitEvent(stream, cublas_event[s]);
+    }
+}
+
 
 void CublasGemm(cublasHandle_t cublas_handle,
     c10::BFloat16 *a, int64_t a_rows, int64_t a_cols, bool trans_a,
@@ -234,6 +250,9 @@ void CublasGroupedGemm(torch::Tensor a,
 		       torch::Tensor c,
 		       torch::Tensor batch_sizes,
 		       bool trans_b) {
+  if (!cublas_init)
+    cublas_handle_init();
+
   int64_t bs = batch_sizes.size(0), k = a.size(1);
   int64_t n = trans_b ? b.size(1) : b.size(2);
   int64_t b_rows = b.size(1), b_cols = b.size(2);
@@ -251,12 +270,17 @@ void CublasGroupedGemm(torch::Tensor a,
     b_ptr += b_rows * b_cols;
     c_ptr += m * n;
   }
+
+  cublas_sync_streams(c10::cuda::getCurrentCUDAStream());
 }
 
 void CublasGroupedGemmVariableK(torch::Tensor a,
 				torch::Tensor b,
 				torch::Tensor c,
 				torch::Tensor batch_sizes) {
+  if (!cublas_init)
+    cublas_handle_init();
+
   int64_t bs = batch_sizes.size(0), m = a.size(1), n = b.size(1);
   c10::BFloat16* a_ptr = a.data_ptr<c10::BFloat16>();
   c10::BFloat16* b_ptr = b.data_ptr<c10::BFloat16>();
@@ -270,6 +294,8 @@ void CublasGroupedGemmVariableK(torch::Tensor a,
     b_ptr += k * n;
     c_ptr += m * n;
   }
+
+  cublas_sync_streams(c10::cuda::getCurrentCUDAStream());
 }
 
 void GroupedGemmVariableK(torch::Tensor a,
@@ -355,9 +381,6 @@ void GroupedGemm(torch::Tensor a,
   // NOTE: We support transposition through the 'trans_b' flag.
   TORCH_CHECK(a.is_contiguous());
   TORCH_CHECK(b.is_contiguous());
-
-  if (!cublas_init)
-    cublas_handle_init();
 
   // NOTE: Use cuBLAS for SM90 until CUTLASS supports SM90-optimized grouped-gemm.
 #if !defined(GROUPED_GEMM_DEVICE_CAPABILITY) || GROUPED_GEMM_DEVICE_CAPABILITY != 80
