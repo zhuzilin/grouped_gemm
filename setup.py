@@ -42,8 +42,8 @@ ext_modules = [
 
 setup(
     name="grouped_gemm",
-    version="0.0.1",
-    author="Trevor Gale, Shiqing Fan",
+    version="1.1.1",
+    author="Trevor Gale, Jiang Shao, Shiqing Fan",
     author_email="tgale@stanford.edu, jiangs@nvidia.com, shiqingf@nvidia.com",
     description="GEMM Grouped",
     url="https://github.com/fanshiqing/grouped_gemm",
