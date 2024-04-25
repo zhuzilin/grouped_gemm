@@ -523,7 +523,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
 
         break;
     }
-// #ifdef ENABLE_BF16
+#ifdef ENABLE_BF16
     case at::ScalarType::BFloat16:
     {
         using dType = cutlass::bfloat16_t;
@@ -545,8 +545,8 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
 
         break;
     }
-// #endif
-// #ifdef ENABLE_FP8
+#endif
+#ifdef ENABLE_FP8
     case at::ScalarType::Float8_e5m2:
     {
         using dType = cutlass::float_e5m2_t;
@@ -589,7 +589,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
 
         break;
     }
-// #endif
+#endif
     default:
         throw std::runtime_error("Wrong activation tensor type.");
     }
@@ -670,7 +670,7 @@ torch::Tensor moe_recover_topK_op(
 
         break;
     }
-// #ifdef ENABLE_BF16
+#ifdef ENABLE_BF16
     case at::ScalarType::BFloat16:
     {
         using dType = cutlass::bfloat16_t;
@@ -692,8 +692,8 @@ torch::Tensor moe_recover_topK_op(
 
         break;
     }
-// #endif
-// #ifdef ENABLE_FP8
+#endif
+#ifdef ENABLE_FP8
     case at::ScalarType::Float8_e5m2:
     {
         using dType = cutlass::float_e5m2_t;
@@ -736,7 +736,7 @@ torch::Tensor moe_recover_topK_op(
 
         break;
     }
-// #endif
+#endif
     default:
         throw std::runtime_error("Wrong activation tensor type.");
     }
@@ -819,7 +819,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
 
         break;
     }
-// #ifdef ENABLE_BF16
+#ifdef ENABLE_BF16
     case at::ScalarType::BFloat16:
     {
         using dType = cutlass::bfloat16_t;
@@ -844,8 +844,8 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
 
         break;
     }
-// #endif
-// #ifdef ENABLE_FP8
+#endif
+#ifdef ENABLE_FP8
     case at::ScalarType::Float8_e5m2:
     {
         using dType = cutlass::float_e5m2_t;
@@ -894,7 +894,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
 
         break;
     }
-// #endif
+#endif
     default:
         throw std::runtime_error("Wrong activation tensor type.");
     }
