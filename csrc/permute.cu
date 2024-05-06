@@ -37,10 +37,12 @@ inline T *get_ptr(torch::Tensor &t)
 //
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-__global__ void moe_permute_topK_row_map(const int *sorted_row_id,
-                                         int *row_id_map,
-                                         const int num_rows,
-                                         const int num_topK)
+static __global__ void moe_permute_topK_row_map(
+    const int *sorted_row_id,
+    int *row_id_map,
+    const int num_rows,
+    const int num_topK,
+    const int num_out_tokens)
 {
     // Each block corresponds to one source token
     // row_id_map[num_topK][num_rows]
@@ -55,7 +57,14 @@ __global__ void moe_permute_topK_row_map(const int *sorted_row_id,
     int source_token_id = source_row / num_topK;
     int source_topK_id = source_row % num_topK;
 
-    row_id_map[source_topK_id * num_rows + source_token_id] = idx;
+    if (idx >= num_out_tokens)
+    {
+        row_id_map[source_topK_id * num_rows + source_token_id] = -1;
+    }
+    else
+    {
+        row_id_map[source_topK_id * num_rows + source_token_id] = idx;
+    }
 }
 
 template <typename T, typename TCompute, int kElementsPerAccess, bool hasProb>
@@ -96,21 +105,33 @@ __global__ void moe_recover_topK_kernel(const T *input,
         FragmentCompute frag_sum;
 
         int source_row = row_id_map[source_token];
-        const T *source_row_ptr = input + source_row * num_cols;
 
-        cutlass::arch::global_load<FragmentLoadStore, sizeof(FragmentLoadStore), cutlass::arch::CacheOperation::LastUse>(
-            frag_load_store, (source_row_ptr + i), true);
-        frag_sum = src_converter(frag_load_store);
-
-        if (hasProb)
+        if (source_row != -1)
         {
-            frag_sum = frag_sum * s_prob[0];
+            const T *source_row_ptr = input + source_row * num_cols;
+
+            cutlass::arch::global_load<FragmentLoadStore, sizeof(FragmentLoadStore), cutlass::arch::CacheOperation::LastUse>(
+                frag_load_store, (source_row_ptr + i), true);
+            frag_sum = src_converter(frag_load_store);
+
+            if (hasProb)
+            {
+                frag_sum = frag_sum * s_prob[0];
+            }
+        }
+        else
+        {
+            frag_sum.clear();
         }
 
         for (int k = 1; k < num_topK; k++)
         {
             source_row = row_id_map[k * num_rows + source_token];
-            source_row_ptr = input + source_row * num_cols;
+
+            if (source_row == -1)
+                continue;
+
+            const T *source_row_ptr = input + source_row * num_cols;
 
             cutlass::arch::global_load<FragmentLoadStore, sizeof(FragmentLoadStore), cutlass::arch::CacheOperation::LastUse>(
                 frag_load_store, (source_row_ptr + i), true);
@@ -249,6 +270,7 @@ void moe_permute_topK_kernel_launcher(
     const int num_rows,
     const int num_topK,
     const int num_cols,
+    const int num_out_tokens,
     cudaStream_t stream,
     float *prob_grad = nullptr,
     const T *input_fwd = nullptr)
@@ -264,7 +286,8 @@ void moe_permute_topK_kernel_launcher(
                 sorted_row_id,
                 row_id_map,
                 num_rows,
-                num_topK);
+                num_topK,
+                num_out_tokens);
 
             blocks = num_rows;
             threads = std::min(num_cols / kElementsPerAccess, 1024);
@@ -422,9 +445,10 @@ void moe_permute_topK_kernel_launcher(
 //
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_op(
+std::tuple<Tensor, Tensor, std::vector<Tensor>> moe_permute_topK_op(
     Tensor              input,
     Tensor              indices,
+    int64_t             num_out_tokens,
     std::vector<Tensor> workspace,
     int64_t             max_expanded_token_num)
 {
@@ -471,8 +495,9 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
     const at::ScalarType _st = input.scalar_type();
 
     // Output buffer alloc
+    num_out_tokens = (num_out_tokens > 0) ? num_out_tokens : num_tokens * num_topK;
     Tensor permuted_output =
-        torch::empty({num_tokens * num_topK, num_cols}, torch::dtype(_st).device(torch::kCUDA).requires_grad(false));
+        torch::empty({num_out_tokens, num_cols}, torch::dtype(_st).device(torch::kCUDA).requires_grad(false));
     Tensor row_id_map =
         torch::empty({num_tokens * num_topK}, torch::dtype(torch::kInt32).device(torch::kCUDA).requires_grad(false));
 
@@ -498,6 +523,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
             num_tokens,
             num_topK,
             num_cols,
+            num_out_tokens,
             stream);
 
         break;
@@ -519,6 +545,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
             num_tokens,
             num_topK,
             num_cols,
+            num_out_tokens,
             stream);
 
         break;
@@ -541,6 +568,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
             num_tokens,
             num_topK,
             num_cols,
+            num_out_tokens,
             stream);
 
         break;
@@ -564,6 +592,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
             num_tokens,
             num_topK,
             num_cols,
+            num_out_tokens,
             stream);
 
         break;
@@ -585,6 +614,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
             num_tokens,
             num_topK,
             num_cols,
+            num_out_tokens,
             stream);
 
         break;
@@ -603,16 +633,13 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<Tensor>> moe_permute_topK_o
 //
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-torch::Tensor moe_recover_topK_op(
-    torch::Tensor  input,
-    torch::Tensor  row_id_map,
-    torch::Tensor  prob,
+Tensor moe_recover_topK_op(
+    Tensor  input,
+    Tensor  row_id_map,
+    Tensor  prob,
     int64_t num_tokens,
     int64_t num_topK)
 {
-    // Handle optional tensors; replace `None` with empty tensors
-    // Tensor prob = prob_opt.value_or(torch::Tensor());
-
     const int num_cols = input.size(1);
 
     // activations type
@@ -645,6 +672,7 @@ torch::Tensor moe_recover_topK_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream);
 
         break;
@@ -666,6 +694,7 @@ torch::Tensor moe_recover_topK_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream);
 
         break;
@@ -688,6 +717,7 @@ torch::Tensor moe_recover_topK_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream);
 
         break;
@@ -711,6 +741,7 @@ torch::Tensor moe_recover_topK_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream);
 
         break;
@@ -732,6 +763,7 @@ torch::Tensor moe_recover_topK_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream);
 
         break;
@@ -744,7 +776,7 @@ torch::Tensor moe_recover_topK_op(
     return unpermuted_output;
 }
 
-std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
+std::tuple<Tensor, Tensor> moe_recover_topK_bwd_op(
     Tensor  input_bwd,
     Tensor  input_fwd,
     Tensor  row_id_map,
@@ -762,7 +794,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
 
     // Output buffer alloc
     Tensor act_grad =
-        torch::empty({num_tokens * num_topK, num_cols}, torch::dtype(_st).device(torch::kCUDA).requires_grad(false));
+        torch::empty({input_fwd.size(0), num_cols}, torch::dtype(_st).device(torch::kCUDA).requires_grad(false));
     Tensor prob_grad =
         torch::empty({num_tokens, num_topK}, torch::dtype(torch::kFloat32).device(torch::kCUDA).requires_grad(false));
     float *prob_grad_ptr = get_ptr<float>(prob_grad);
@@ -789,6 +821,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream,
             prob_grad_ptr,
             input_fwd_ptr);
@@ -813,6 +846,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream,
             prob_grad_ptr,
             input_fwd_ptr);
@@ -838,6 +872,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream,
             prob_grad_ptr,
             input_fwd_ptr);
@@ -864,6 +899,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream,
             prob_grad_ptr,
             input_fwd_ptr);
@@ -888,6 +924,7 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
             num_tokens,
             num_topK,
             num_cols,
+            0,
             stream,
             prob_grad_ptr,
             input_fwd_ptr);
@@ -901,6 +938,5 @@ std::tuple<torch::Tensor, torch::Tensor> moe_recover_topK_bwd_op(
 
     return std::make_tuple(act_grad, prob_grad);
 }
-
 
 }  // namespace grouped_gemm

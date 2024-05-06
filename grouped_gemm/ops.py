@@ -57,6 +57,7 @@ class PermuteMoE_topK(torch.autograd.Function):
   def forward(ctx, 
               input_act: torch.Tensor,
               indices: torch.Tensor,
+              num_out_tokens: int,
               max_token_num: int):
     '''
     indices: for topK=1, indices in a 1-d tensor of shape [num_tokens],
@@ -111,6 +112,7 @@ class PermuteMoE_topK(torch.autograd.Function):
     permuted_act, row_id_map, PermuteMoE_topK.workspace_fw = backend.permute(
       input_act,
       indices,
+      num_out_tokens,
       PermuteMoE_topK.workspace_fw,
       PermuteMoE_topK.max_expanded_token_num)
 
@@ -126,7 +128,7 @@ class PermuteMoE_topK(torch.autograd.Function):
     nvtx.range_push("permute_topK backward")
     # Empty input check
     if not permuted_act_grad.numel():
-      return permuted_act_grad, None, None
+      return permuted_act_grad, None, None, None
 
     if not permuted_act_grad.is_contiguous():
       permuted_act_grad = permuted_act_grad.contiguous()
@@ -142,7 +144,7 @@ class PermuteMoE_topK(torch.autograd.Function):
       num_tokens,
       num_topK)
     nvtx.range_pop()
-    return unpermuted_act_grad, None, None
+    return unpermuted_act_grad, None, None, None
 
 ################################################################################################
 ##
@@ -174,12 +176,9 @@ class UnpermuteMoE_topK(torch.autograd.Function):
       probs = probs.cuda()
 
     # Shape check
-    if row_id_map.size(0) != input_act.size(0):
-      raise RuntimeError(f"[Error] unpermute_topK op input `row_id_map` shape mismatch! "
-                         f"Expect {input_act.size(0)}, but got {row_id_map.size(0)}.")
-    if probs is not None and input_act.size(0) != probs.size(0) * probs.size(1):
+    if probs is not None and row_id_map.size(0) != probs.size(0) * probs.size(1):
       raise RuntimeError(f"[Error] unpermute_topK op input `probs` shape mismatch! "
-                         f"Expect {input_act.size(0)}, but got {probs.size(0) * probs.size(1)}.")
+                         f"Expect {row_id_map.size(0)}, but got {probs.size(0) * probs.size(1)}.")
 
     # Data type check
     if row_id_map.dtype != torch.int32:
@@ -241,8 +240,9 @@ class UnpermuteMoE_topK(torch.autograd.Function):
     nvtx.range_pop()
     return act_grad, None, prob_grad
 
-def permute(input_act, indices, max_token_num=0):
-  return PermuteMoE_topK.apply(input_act, indices, max_token_num)
+def permute(input_act, indices, num_out_tokens=None, max_token_num=0):
+  num_out_tokens = 0 if num_out_tokens is None else num_out_tokens
+  return PermuteMoE_topK.apply(input_act, indices, num_out_tokens, max_token_num)
 
 def unpermute(input_act, row_id_map, probs=None):
   return UnpermuteMoE_topK.apply(input_act, row_id_map, probs)

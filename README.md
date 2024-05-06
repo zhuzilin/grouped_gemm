@@ -70,6 +70,7 @@ python grouped_gemm/sinkhorn_test.py
 > grouped_gemm.ops.permute(
 >   input_act: torch.Tensor,
 >   indices: torch.Tensor,
+>   num_out_tokens: int = 0,
 >   max_token_num=0: int) -> tuple
 > ```
 
@@ -87,6 +88,9 @@ The output tuple of `(torch.Tensor, torch.Tensor)` that contains two tensors `pe
 * **indices** (torch.Tensor)  
     &emsp;shape = [tokens_num, topK_num]  
     &emsp;The topK expert indices for each row (token) of activations. The `int32` type is recommended.
+
+* **num_out_tokens** (int)
+    &emsp;The number of output tokens (rows) used for token drop feature.
 
 * **max_token_num** (int)  
     &emsp;The maximum number of tokens (rows) used for workspace pre-allocation.
