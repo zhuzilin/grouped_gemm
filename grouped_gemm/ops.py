@@ -6,6 +6,8 @@ from sys import stderr
 import torch.cuda.nvtx as nvtx
 
 
+# For debug's convenience
+ENABLE_NVTX=False
 
 class GroupedGemm(torch.autograd.Function):
 
@@ -63,7 +65,8 @@ class PermuteMoE_topK(torch.autograd.Function):
     indices: for topK=1, indices in a 1-d tensor of shape [num_tokens],
              otherwise, it's a 2-d tensor of shape [num_tokens, topK]
     '''
-    nvtx.range_push("permute_topK forward")
+    if ENABLE_NVTX:
+      nvtx.range_push("permute_topK forward")
     # Empty input check
     if not input_act.numel():
       return input_act, None
@@ -119,13 +122,15 @@ class PermuteMoE_topK(torch.autograd.Function):
     ctx.row_id_map = row_id_map
     ctx.num_tokens = indices.size(0)
     ctx.num_topK = num_topK
-    nvtx.range_pop()
+    if ENABLE_NVTX:
+      nvtx.range_pop()
     return permuted_act, row_id_map
 
 
   @staticmethod
   def backward(ctx, permuted_act_grad, _):
-    nvtx.range_push("permute_topK backward")
+    if ENABLE_NVTX:
+      nvtx.range_push("permute_topK backward")
     # Empty input check
     if not permuted_act_grad.numel():
       return permuted_act_grad, None, None, None
@@ -143,7 +148,8 @@ class PermuteMoE_topK(torch.autograd.Function):
       torch.tensor([]),
       num_tokens,
       num_topK)
-    nvtx.range_pop()
+    if ENABLE_NVTX:
+      nvtx.range_pop()
     return unpermuted_act_grad, None, None, None
 
 ################################################################################################
@@ -159,7 +165,8 @@ class UnpermuteMoE_topK(torch.autograd.Function):
               input_act: torch.Tensor,
               row_id_map: torch.Tensor,
               probs: torch.Tensor = None):
-    nvtx.range_push("unpermute_topK forward")
+    if ENABLE_NVTX:
+      nvtx.range_push("unpermute_topK forward")
     # Empty input check
     if not input_act.numel():
       ctx.probs = probs
@@ -212,12 +219,14 @@ class UnpermuteMoE_topK(torch.autograd.Function):
       num_topK)
 
     ctx.save_for_backward(input_act, row_id_map, probs)
-    nvtx.range_pop()
+    if ENABLE_NVTX:
+      nvtx.range_pop()
     return unpermuted_output
 
   @staticmethod
   def backward(ctx, unpermuted_act_grad):
-    nvtx.range_push("unpermute_topK backward")
+    if ENABLE_NVTX:
+      nvtx.range_push("unpermute_topK backward")
     # Empty input check
     if not unpermuted_act_grad.numel():
       return unpermuted_act_grad, None, ctx.probs
@@ -237,7 +246,8 @@ class UnpermuteMoE_topK(torch.autograd.Function):
 
     if not ctx.needs_input_grad[2]:
       prob_grad = None
-    nvtx.range_pop()
+    if ENABLE_NVTX:
+      nvtx.range_pop()
     return act_grad, None, prob_grad
 
 def permute(input_act, indices, num_out_tokens=None, max_token_num=0):
