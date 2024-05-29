@@ -199,14 +199,14 @@ void cublas_handle_init()
 
     for (int i = 0; i < NUM_STREAM; i++)
     {
-        cudaStreamCreate(&cublas_stream[i]);
+        cudaStreamCreateWithFlags(&cublas_stream[i], cudaStreamNonBlocking);
         cublasCreate(&cublas_handle[i]);
         cublasSetStream(cublas_handle[i], cublas_stream[i]);
         cudaEventCreate(&cublas_event[i]);
     }
 }
 
-inline void cublas_sync_streams(cudaStream_t stream)
+inline void cublas_current_wait_streams(cudaStream_t stream)
 {
     for (int s = 0; s < NUM_STREAM; s++)
     {
@@ -219,6 +219,15 @@ inline void cublas_sync_streams(cudaStream_t stream)
     }
 }
 
+inline void cublas_streams_wait_current(cudaStream_t stream)
+{
+    cudaEventRecord(cublas_event[0], stream);
+
+    for (int s = 0; s < NUM_STREAM; s++)
+    {
+        cudaStreamWaitEvent(cublas_stream[s], cublas_event[0]);
+    }
+}
 
 void CublasGemm(cublasHandle_t cublas_handle,
     c10::BFloat16 *a, int64_t a_rows, int64_t a_cols, bool trans_a,
@@ -260,6 +269,8 @@ void CublasGroupedGemm(torch::Tensor a,
   c10::BFloat16* b_ptr = b.data_ptr<c10::BFloat16>();
   c10::BFloat16* c_ptr = c.data_ptr<c10::BFloat16>();
 
+  cublas_streams_wait_current(c10::cuda::getCurrentCUDAStream());
+
   for (int i = 0; i < bs; ++i) {
 
     int64_t m = batch_sizes.data_ptr<int64_t>()[i];
@@ -271,7 +282,7 @@ void CublasGroupedGemm(torch::Tensor a,
     c_ptr += m * n;
   }
 
-  cublas_sync_streams(c10::cuda::getCurrentCUDAStream());
+  cublas_current_wait_streams(c10::cuda::getCurrentCUDAStream());
 }
 
 void CublasGroupedGemmVariableK(torch::Tensor a,
@@ -285,6 +296,9 @@ void CublasGroupedGemmVariableK(torch::Tensor a,
   c10::BFloat16* a_ptr = a.data_ptr<c10::BFloat16>();
   c10::BFloat16* b_ptr = b.data_ptr<c10::BFloat16>();
   c10::BFloat16* c_ptr = c.data_ptr<c10::BFloat16>();
+
+  cublas_streams_wait_current(c10::cuda::getCurrentCUDAStream());
+
   for (int i = 0; i < bs; ++i) {
     int64_t k = batch_sizes.data_ptr<int64_t>()[i];
     CublasGemm(cublas_handle[i % NUM_STREAM], a_ptr, k, m, /*trans_a=*/true,
@@ -295,7 +309,7 @@ void CublasGroupedGemmVariableK(torch::Tensor a,
     c_ptr += m * n;
   }
 
-  cublas_sync_streams(c10::cuda::getCurrentCUDAStream());
+  cublas_current_wait_streams(c10::cuda::getCurrentCUDAStream());
 }
 
 void GroupedGemmVariableK(torch::Tensor a,
