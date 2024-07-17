@@ -206,6 +206,152 @@ void cublas_handle_init()
     }
 }
 
+#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12500
+
+#define MAX_GROUPSIZE 1024
+
+cublasOperation_t transa_array[MAX_GROUPSIZE];
+cublasOperation_t transb_array[MAX_GROUPSIZE];
+int m_array[MAX_GROUPSIZE];
+int n_array[MAX_GROUPSIZE];
+int k_array[MAX_GROUPSIZE];
+float alpha_array[MAX_GROUPSIZE];
+float beta_array[MAX_GROUPSIZE];
+
+void * Aarray[MAX_GROUPSIZE];
+int lda_array[MAX_GROUPSIZE];
+void * Barray[MAX_GROUPSIZE];
+int ldb_array[MAX_GROUPSIZE];
+void * Carray[MAX_GROUPSIZE];
+int ldc_array[MAX_GROUPSIZE];
+
+// on device
+void **d_Aarray = nullptr;
+void **d_Barray = nullptr;
+void **d_Carray = nullptr;
+
+int group_size[MAX_GROUPSIZE];
+
+bool cublas_grouped_gemm_init = false;
+
+void cublas_grouped_gemm_global_var_init()
+{
+    cublas_grouped_gemm_init = true;
+
+    for (int i = 0; i < MAX_GROUPSIZE; i++)
+    {
+        alpha_array[i] = 1.0;
+        beta_array[i] = 0.0;
+        group_size[i] = 1;
+    }
+
+    CUDA_CALL(cudaMalloc(&d_Aarray, MAX_GROUPSIZE * sizeof(void *)));
+    CUDA_CALL(cudaMalloc(&d_Barray, MAX_GROUPSIZE * sizeof(void *)));
+    CUDA_CALL(cudaMalloc(&d_Carray, MAX_GROUPSIZE * sizeof(void *)));
+}
+
+void CublasGemmGroupedBatched(torch::Tensor a,
+		       torch::Tensor b,
+		       torch::Tensor c,
+		       torch::Tensor batch_sizes,
+           bool trans_a, bool trans_b)
+{
+  if (!cublas_grouped_gemm_init)
+    cublas_grouped_gemm_global_var_init();
+
+  int group_count = batch_sizes.size(0);
+
+  c10::BFloat16* a_ptr = a.data_ptr<c10::BFloat16>();
+  c10::BFloat16* b_ptr = b.data_ptr<c10::BFloat16>();
+  c10::BFloat16* c_ptr = c.data_ptr<c10::BFloat16>();
+
+  int a_rows, a_cols, b_rows, b_cols, c_rows, c_cols;
+
+  for (int i = 0; i < group_count; i++)
+  {
+    if (trans_a) {
+      a_rows = batch_sizes.data_ptr<int64_t>()[i];
+      a_cols = a.size(1);
+
+      // b.dims() == 2 here
+      b_rows = batch_sizes.data_ptr<int64_t>()[i];
+      b_cols = b.size(1);
+
+      c_rows = a_cols;
+      c_cols = b_cols;
+    } else {
+      a_rows = batch_sizes.data_ptr<int64_t>()[i];
+      a_cols = a.size(1);
+
+      // b.dims() == 3 here
+      b_rows = b.size(1);
+      b_cols = b.size(2);
+
+      c_rows = a_rows;
+      c_cols = trans_b ? b_rows : b_cols;
+    }
+
+    transa_array[i] = trans_a ? CUBLAS_OP_T : CUBLAS_OP_N;
+    transb_array[i] = trans_b ? CUBLAS_OP_T : CUBLAS_OP_N;
+
+    int m = trans_b ? b_rows : b_cols;
+    int k = trans_b ? b_cols : b_rows;
+    int n = trans_a ? a_cols : a_rows;
+    m_array[i] = m;
+    n_array[i] = n;
+    k_array[i] = k;
+
+    lda_array[i] = trans_a ? n : k;
+    ldb_array[i] = trans_b ? k : m;
+    ldc_array[i] = c_cols;
+    
+    Aarray[i] = a_ptr;
+    Barray[i] = b_ptr;
+    Carray[i] = c_ptr;
+
+    a_ptr += a_rows * a_cols;
+    b_ptr += b_rows * b_cols;
+    c_ptr += c_rows * c_cols;
+  }
+
+  CUDA_CALL(cudaMemcpyAsync(d_Aarray, Aarray,
+                              sizeof(void *) * group_count,
+                              cudaMemcpyHostToDevice,
+                              c10::cuda::getCurrentCUDAStream()));
+  CUDA_CALL(cudaMemcpyAsync(d_Barray, Barray,
+                              sizeof(void *) * group_count,
+                              cudaMemcpyHostToDevice,
+                              c10::cuda::getCurrentCUDAStream()));
+  CUDA_CALL(cudaMemcpyAsync(d_Carray, Carray,
+                              sizeof(void *) * group_count,
+                              cudaMemcpyHostToDevice,
+                              c10::cuda::getCurrentCUDAStream()));
+
+  CUBLAS_CALL(cublasGemmGroupedBatchedEx(
+      at::cuda::getCurrentCUDABlasHandle(),
+      transb_array,
+      transa_array,
+      m_array,
+      n_array,
+      k_array,
+      alpha_array,
+      d_Barray,
+      CUDA_R_16BF,
+      ldb_array,
+      d_Aarray,
+      CUDA_R_16BF,
+      lda_array,
+      beta_array,
+      d_Carray,
+      CUDA_R_16BF,
+      ldc_array,
+      group_count,
+      group_size,
+      CUBLAS_COMPUTE_32F));
+}
+
+#endif
+
 inline void cublas_current_wait_streams(cudaStream_t stream)
 {
     for (int s = 0; s < NUM_STREAM; s++)
@@ -259,6 +405,12 @@ void CublasGroupedGemm(torch::Tensor a,
 		       torch::Tensor c,
 		       torch::Tensor batch_sizes,
 		       bool trans_b) {
+
+#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12500
+  CublasGemmGroupedBatched(a, b, c, batch_sizes, false, trans_b);
+  return;
+#endif
+
   if (!cublas_init)
     cublas_handle_init();
 
@@ -289,6 +441,11 @@ void CublasGroupedGemmVariableK(torch::Tensor a,
 				torch::Tensor b,
 				torch::Tensor c,
 				torch::Tensor batch_sizes) {
+#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12500
+  CublasGemmGroupedBatched(a, b, c, batch_sizes, true, false);
+  return;
+#endif
+
   if (!cublas_init)
     cublas_handle_init();
 
