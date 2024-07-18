@@ -59,7 +59,7 @@ class OpsTest(parameterized.TestCase):
         torch.manual_seed(0)
         a = randn(z, m, k).view(-1, k)
         b = randn(z, n, k) if trans_b else randn(z, k, n)
-        batch_sizes = torch.tensor([m] * z)
+        batch_sizes = torch.tensor([m] * z, dtype=torch.int32 if dev else torch.int64)
 
         a.requires_grad_(True)
         b.requires_grad_(True)
@@ -86,7 +86,7 @@ class OpsTest(parameterized.TestCase):
 
         dist = torch.rand(z, )
         dist /= dist.sum()
-        batch_sizes = (dist * m).to(torch.long)
+        batch_sizes = (dist * m).to(torch.int32 if dev else torch.int64)
         error = m * z - batch_sizes.sum()
         batch_sizes[-1] += error
         assert batch_sizes.sum() == (m * z)

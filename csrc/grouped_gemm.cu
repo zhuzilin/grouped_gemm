@@ -210,8 +210,8 @@ void cublas_handle_init()
 
 #define MAX_GROUPSIZE 1024
 
-cublasOperation_t transa_array[MAX_GROUPSIZE];
-cublasOperation_t transb_array[MAX_GROUPSIZE];
+cublasOperation_t trans_array_T[MAX_GROUPSIZE];
+cublasOperation_t trans_array_N[MAX_GROUPSIZE];
 int m_array[MAX_GROUPSIZE];
 int n_array[MAX_GROUPSIZE];
 int k_array[MAX_GROUPSIZE];
@@ -243,6 +243,8 @@ void cublas_grouped_gemm_global_var_init()
         alpha_array[i] = 1.0;
         beta_array[i] = 0.0;
         group_size[i] = 1;
+        trans_array_T[i] = CUBLAS_OP_T;
+        trans_array_N[i] = CUBLAS_OP_N;
     }
 
     CUDA_CALL(cudaMalloc(&d_Aarray, MAX_GROUPSIZE * sizeof(void *)));
@@ -266,21 +268,26 @@ void CublasGemmGroupedBatched(torch::Tensor a,
   c10::BFloat16* c_ptr = c.data_ptr<c10::BFloat16>();
 
   int a_rows, a_cols, b_rows, b_cols, c_rows, c_cols;
+  int m, n, k;
 
   for (int i = 0; i < group_count; i++)
   {
     if (trans_a) {
-      a_rows = batch_sizes.data_ptr<int64_t>()[i];
+      a_rows = batch_sizes.data_ptr<int32_t>()[i];
       a_cols = a.size(1);
 
       // b.dims() == 2 here
-      b_rows = batch_sizes.data_ptr<int64_t>()[i];
+      b_rows = batch_sizes.data_ptr<int32_t>()[i];
       b_cols = b.size(1);
 
       c_rows = a_cols;
       c_cols = b_cols;
+
+      m = b.size(1);
+      k = batch_sizes.data_ptr<int32_t>()[i];
+      n = a.size(1);
     } else {
-      a_rows = batch_sizes.data_ptr<int64_t>()[i];
+      a_rows = batch_sizes.data_ptr<int32_t>()[i];
       a_cols = a.size(1);
 
       // b.dims() == 3 here
@@ -289,14 +296,15 @@ void CublasGemmGroupedBatched(torch::Tensor a,
 
       c_rows = a_rows;
       c_cols = trans_b ? b_rows : b_cols;
+
+      m = trans_b ? b.size(1) : b.size(2);
+      k = trans_b ? b.size(2) : b.size(1);
+      n = batch_sizes.data_ptr<int32_t>()[i];
     }
 
-    transa_array[i] = trans_a ? CUBLAS_OP_T : CUBLAS_OP_N;
-    transb_array[i] = trans_b ? CUBLAS_OP_T : CUBLAS_OP_N;
-
-    int m = trans_b ? b_rows : b_cols;
-    int k = trans_b ? b_cols : b_rows;
-    int n = trans_a ? a_cols : a_rows;
+    // int m = trans_b ? b_rows : b_cols;
+    // int k = trans_b ? b_cols : b_rows;
+    // int n = trans_a ? a_cols : a_rows;
     m_array[i] = m;
     n_array[i] = n;
     k_array[i] = k;
@@ -329,8 +337,8 @@ void CublasGemmGroupedBatched(torch::Tensor a,
 
   CUBLAS_CALL(cublasGemmGroupedBatchedEx(
       at::cuda::getCurrentCUDABlasHandle(),
-      transb_array,
-      transa_array,
+      trans_b ? trans_array_T : trans_array_N,
+      trans_a ? trans_array_T : trans_array_N,
       m_array,
       n_array,
       k_array,
@@ -569,7 +577,7 @@ void GroupedGemmDev(torch::Tensor a,
   // We expect the batch_sizes on CPU.
   TORCH_CHECK(batch_sizes.is_cpu());
   TORCH_CHECK(batch_sizes.ndimension() == 1);
-  TORCH_CHECK(batch_sizes.scalar_type() == torch::kInt64);
+  TORCH_CHECK(batch_sizes.scalar_type() == torch::kInt32);
 
   // We expected a CUDA tensor with two dimensions and shape
   // (tokens, hidden_in) for 'a'.
