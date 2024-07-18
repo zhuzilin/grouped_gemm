@@ -405,12 +405,6 @@ void CublasGroupedGemm(torch::Tensor a,
 		       torch::Tensor c,
 		       torch::Tensor batch_sizes,
 		       bool trans_b) {
-
-#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12500
-  CublasGemmGroupedBatched(a, b, c, batch_sizes, false, trans_b);
-  return;
-#endif
-
   if (!cublas_init)
     cublas_handle_init();
 
@@ -441,11 +435,6 @@ void CublasGroupedGemmVariableK(torch::Tensor a,
 				torch::Tensor b,
 				torch::Tensor c,
 				torch::Tensor batch_sizes) {
-#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12500
-  CublasGemmGroupedBatched(a, b, c, batch_sizes, true, false);
-  return;
-#endif
-
   if (!cublas_init)
     cublas_handle_init();
 
@@ -567,5 +556,62 @@ void GroupedGemm(torch::Tensor a,
   return;
 #endif
 }
+
+#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12500
+void GroupedGemmDev(torch::Tensor a,
+		 torch::Tensor b,
+		 torch::Tensor c,
+		 torch::Tensor batch_sizes,
+		 bool trans_a, bool trans_b) {
+  // NOTE: We only support 'trans_a' or 'trans_b', not both.
+  TORCH_CHECK(!(trans_a && trans_b));
+
+  // We expect the batch_sizes on CPU.
+  TORCH_CHECK(batch_sizes.is_cpu());
+  TORCH_CHECK(batch_sizes.ndimension() == 1);
+  TORCH_CHECK(batch_sizes.scalar_type() == torch::kInt64);
+
+  // We expected a CUDA tensor with two dimensions and shape
+  // (tokens, hidden_in) for 'a'.
+  TORCH_CHECK(a.is_cuda());
+  TORCH_CHECK(a.ndimension() == 2);
+  TORCH_CHECK(a.scalar_type() == torch::kBFloat16);
+
+  // Defer to the variable 'k' helper for the rest of the op.
+  if (trans_a) {
+    CublasGemmGroupedBatched(a, b, c, batch_sizes, true, false);
+    return;
+  }
+
+  // We expected a CUDA tensor with three dimensions and shape
+  // (num_experts, hidden_in, hidden_out) for 'b'.
+  TORCH_CHECK(b.is_cuda());
+  TORCH_CHECK(b.ndimension() == 3);
+  TORCH_CHECK(b.scalar_type() == torch::kBFloat16);
+
+  // Validate the contraction dimensions match.
+  int64_t tokens = a.size(0), num_experts = b.size(0);
+  int64_t hidden_in = trans_b ? b.size(2) : b.size(1);
+  int64_t hidden_out = trans_b ? b.size(1) : b.size(2);
+  TORCH_CHECK(hidden_in == a.size(1));
+
+  // Validate that we have one size per expert.
+  TORCH_CHECK(batch_sizes.size(0) == num_experts);
+
+  // Validate the output shape.
+  TORCH_CHECK(c.is_cuda());
+  TORCH_CHECK(c.ndimension() == 2);
+  TORCH_CHECK(c.scalar_type() == torch::kBFloat16);
+  TORCH_CHECK(c.size(0) == tokens);
+  TORCH_CHECK(c.size(1) == hidden_out);
+
+  // NOTE: We support transposition through the 'trans_b' flag.
+  TORCH_CHECK(a.is_contiguous());
+  TORCH_CHECK(b.is_contiguous());
+
+  CublasGemmGroupedBatched(a, b, c, batch_sizes, false, trans_b);
+  return;
+}
+#endif
 
 }  // namespace grouped_gemm

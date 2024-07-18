@@ -8,6 +8,9 @@ namespace grouped_gemm {
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gmm", &GroupedGemm, "Grouped GEMM.");
+#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12500
+  m.def("gmm_dev", &GroupedGemmDev, "Grouped GEMM.");
+#endif
   m.def("sinkhorn", &sinkhorn, "Sinkhorn kernel");
   m.def("permute", &moe_permute_topK_op, "Token permutation kernel");
   m.def("unpermute", &moe_recover_topK_op, "Token un-permutation kernel");
