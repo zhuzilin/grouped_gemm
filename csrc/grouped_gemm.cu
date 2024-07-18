@@ -270,28 +270,28 @@ void CublasGemmGroupedBatched(torch::Tensor a,
   if (!cublas_grouped_gemm_init)
     cublas_grouped_gemm_global_var_init();
 
-  int group_count = batch_sizes.size(0);
-
   c10::BFloat16* a_ptr = a.data_ptr<c10::BFloat16>();
   c10::BFloat16* b_ptr = b.data_ptr<c10::BFloat16>();
   c10::BFloat16* c_ptr = c.data_ptr<c10::BFloat16>();
 
   int a_rows, a_cols, b_rows, b_cols, c_rows, c_cols;
 
-  for (int i = 0; i < group_count; i++)
+  int group_count = 0;
+  for (int i = 0; i < batch_sizes.size(0); i++)
   {
+    int bs = batch_sizes.data_ptr<int64_t>()[i];
     if (trans_a) {
-      a_rows = batch_sizes.data_ptr<int64_t>()[i];
+      a_rows = bs;
       a_cols = a.size(1);
 
       // b.dims() == 2 here
-      b_rows = batch_sizes.data_ptr<int64_t>()[i];
+      b_rows = bs;
       b_cols = b.size(1);
 
       c_rows = a_cols;
       c_cols = b_cols;
     } else {
-      a_rows = batch_sizes.data_ptr<int64_t>()[i];
+      a_rows = bs;
       a_cols = a.size(1);
 
       // b.dims() == 3 here
@@ -302,20 +302,24 @@ void CublasGemmGroupedBatched(torch::Tensor a,
       c_cols = trans_b ? b_rows : b_cols;
     }
 
-    int m = trans_b ? b_rows : b_cols;
-    int k = trans_b ? b_cols : b_rows;
-    int n = trans_a ? a_cols : a_rows;
-    m_array[i] = m;
-    n_array[i] = n;
-    k_array[i] = k;
+    if (bs != 0) {
+      int m = trans_b ? b_rows : b_cols;
+      int k = trans_b ? b_cols : b_rows;
+      int n = trans_a ? a_cols : a_rows;
+      m_array[group_count] = m;
+      n_array[group_count] = n;
+      k_array[group_count] = k;
 
-    lda_array[i] = trans_a ? n : k;
-    ldb_array[i] = trans_b ? k : m;
-    ldc_array[i] = c_cols;
-    
-    Aarray[i] = a_ptr;
-    Barray[i] = b_ptr;
-    Carray[i] = c_ptr;
+      lda_array[group_count] = trans_a ? n : k;
+      ldb_array[group_count] = trans_b ? k : m;
+      ldc_array[group_count] = c_cols;
+      
+      Aarray[group_count] = a_ptr;
+      Barray[group_count] = b_ptr;
+      Carray[group_count] = c_ptr;
+
+      group_count++;
+    }
 
     a_ptr += a_rows * a_cols;
     b_ptr += b_rows * b_cols;
