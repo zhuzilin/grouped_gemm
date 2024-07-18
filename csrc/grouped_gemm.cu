@@ -247,9 +247,18 @@ void cublas_grouped_gemm_global_var_init()
         trans_array_N[i] = CUBLAS_OP_N;
     }
 
-    CUDA_CALL(cudaMalloc(&d_Aarray, MAX_GROUPSIZE * sizeof(void *)));
-    CUDA_CALL(cudaMalloc(&d_Barray, MAX_GROUPSIZE * sizeof(void *)));
-    CUDA_CALL(cudaMalloc(&d_Carray, MAX_GROUPSIZE * sizeof(void *)));
+    CUDA_CALL(cudaMallocAsync(
+        &d_Aarray,
+        MAX_GROUPSIZE * sizeof(void *),
+        c10::cuda::getCurrentCUDAStream()));
+    CUDA_CALL(cudaMallocAsync(
+        &d_Barray,
+        MAX_GROUPSIZE * sizeof(void *),
+        c10::cuda::getCurrentCUDAStream()));
+    CUDA_CALL(cudaMallocAsync(
+        &d_Carray,
+        MAX_GROUPSIZE * sizeof(void *),
+        c10::cuda::getCurrentCUDAStream()));
 }
 
 void CublasGemmGroupedBatched(torch::Tensor a,
