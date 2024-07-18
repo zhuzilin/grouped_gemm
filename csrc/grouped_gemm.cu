@@ -210,8 +210,8 @@ void cublas_handle_init()
 
 #define MAX_GROUPSIZE 1024
 
-cublasOperation_t transa_array[MAX_GROUPSIZE];
-cublasOperation_t transb_array[MAX_GROUPSIZE];
+cublasOperation_t trans_array_T[MAX_GROUPSIZE];
+cublasOperation_t trans_array_N[MAX_GROUPSIZE];
 int m_array[MAX_GROUPSIZE];
 int n_array[MAX_GROUPSIZE];
 int k_array[MAX_GROUPSIZE];
@@ -243,6 +243,8 @@ void cublas_grouped_gemm_global_var_init()
         alpha_array[i] = 1.0;
         beta_array[i] = 0.0;
         group_size[i] = 1;
+        trans_array_T[i] = CUBLAS_OP_T;
+        trans_array_N[i] = CUBLAS_OP_N;
     }
 
     CUDA_CALL(cudaMalloc(&d_Aarray, MAX_GROUPSIZE * sizeof(void *)));
@@ -291,9 +293,6 @@ void CublasGemmGroupedBatched(torch::Tensor a,
       c_cols = trans_b ? b_rows : b_cols;
     }
 
-    transa_array[i] = trans_a ? CUBLAS_OP_T : CUBLAS_OP_N;
-    transb_array[i] = trans_b ? CUBLAS_OP_T : CUBLAS_OP_N;
-
     int m = trans_b ? b_rows : b_cols;
     int k = trans_b ? b_cols : b_rows;
     int n = trans_a ? a_cols : a_rows;
@@ -329,8 +328,8 @@ void CublasGemmGroupedBatched(torch::Tensor a,
 
   CUBLAS_CALL(cublasGemmGroupedBatchedEx(
       at::cuda::getCurrentCUDABlasHandle(),
-      transb_array,
-      transa_array,
+      trans_b ? trans_array_T : trans_array_N,
+      trans_a ? trans_array_T : trans_array_N,
       m_array,
       n_array,
       k_array,
