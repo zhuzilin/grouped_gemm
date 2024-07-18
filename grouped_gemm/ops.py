@@ -40,6 +40,37 @@ class GroupedGemm(torch.autograd.Function):
 def gmm(a, b, batch_sizes, trans_b=False):
     return GroupedGemm.apply(a, b, batch_sizes, trans_b)
 
+class GroupedGemmDev(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, a, b, batch_sizes, trans_b):
+        assert torch.count_nonzero(batch_sizes) != 0, "Input batch_sizes should not be all zeros!"
+        ctx.save_for_backward(a, b, batch_sizes)
+        ctx.trans_b = trans_b
+        return backend.gmm_dev(a, b, batch_sizes, trans_a=False, trans_b=trans_b)
+
+    @staticmethod
+    def backward(ctx, grad):
+        grad = grad.contiguous()
+        a, b, batch_sizes = ctx.saved_tensors
+        trans_b = ctx.trans_b
+
+        agrad = None
+        if ctx.needs_input_grad[0]:
+            agrad = backend.gmm_dev(
+                grad, b, batch_sizes, trans_a=False, trans_b=not trans_b)
+
+        bgrad = None
+        if ctx.needs_input_grad[1]:
+            lhs, rhs = (grad, a) if trans_b else (a, grad)
+            bgrad = backend.gmm_dev(
+                lhs, rhs, batch_sizes, trans_a=True, trans_b=False)
+        return agrad, bgrad, None, None
+
+
+def gmm_dev(a, b, batch_sizes, trans_b=False):
+    return GroupedGemmDev.apply(a, b, batch_sizes, trans_b)
+
 def sinkhorn_kernel(cost, tol=0.0001):
     return backend.sinkhorn(cost, tol)
 

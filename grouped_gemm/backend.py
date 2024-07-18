@@ -27,6 +27,12 @@ def gmm(a, b, batch_sizes, trans_a=False, trans_b=False, c=None):
     backend.gmm(a, b, c, batch_sizes, trans_a, trans_b)
     return c
 
+def gmm_dev(a, b, batch_sizes, trans_a=False, trans_b=False, c=None):
+    if c is None:
+        c = _allocate_output(a, b, batch_sizes, trans_a, trans_b)
+    backend.gmm_dev(a, b, c, batch_sizes, trans_a, trans_b)
+    return c
+
 def sinkhorn(cost, tol=0.0001):
     return backend.sinkhorn(cost, tol)
 
